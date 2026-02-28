@@ -18,8 +18,22 @@
     {
       "name": "cite-doi",
       "title": "Cite DOI",
-      "description": "Generates a reference from a DOI",
-      "mode": "no-view"
+      "description": "Generate an APA citation from a DOI (reads clipboard if no argument)",
+      "mode": "no-view",
+      "arguments": [
+        {
+          "name": "doi",
+          "placeholder": "DOI or URL (optional)",
+          "type": "text",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "cite-dois",
+      "title": "Batch Cite DOIs",
+      "description": "Generate APA citations for multiple DOIs",
+      "mode": "view"
     }
   ],
   "dependencies": {
