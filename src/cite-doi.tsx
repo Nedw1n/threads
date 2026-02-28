@@ -3,6 +3,7 @@ import {
   ActionPanel,
   Clipboard,
   Color,
+  getSelectedText,
   Icon,
   List,
   LocalStorage,
@@ -36,10 +37,17 @@ export default function Command() {
       const stored = await LocalStorage.getItem<string>(STORAGE_KEY);
       let refs: StoredReference[] = stored ? JSON.parse(stored) : [];
 
-      // Check clipboard for a DOI
-      const clipboardText = await Clipboard.readText();
-      const clipboardRaw = clipboardText?.trim() ?? "";
-      const clipboardDOI = cleanDOI(clipboardRaw);
+      // Prefer selected text; fall back to clipboard
+      let inputRaw = "";
+      try {
+        inputRaw = (await getSelectedText()).trim();
+      } catch {
+        // No selection available – getSelectedText throws when nothing is selected
+      }
+      if (!validateDOI(cleanDOI(inputRaw))) {
+        inputRaw = (await Clipboard.readText())?.trim() ?? "";
+      }
+      const clipboardDOI = cleanDOI(inputRaw);
       const hasClipboardDOI = validateDOI(clipboardDOI);
 
       let recentDOI: string | null = null;
