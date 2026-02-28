@@ -18,16 +18,8 @@
     {
       "name": "cite-doi",
       "title": "Cite DOI",
-      "description": "Generate an APA citation from a DOI (reads clipboard if no argument)",
-      "mode": "no-view",
-      "arguments": [
-        {
-          "name": "doi",
-          "placeholder": "DOI or URL (optional)",
-          "type": "text",
-          "required": false
-        }
-      ]
+      "description": "Auto-detects a DOI from clipboard, adds it to a persistent reference list, and lets you copy citations",
+      "mode": "view"
     },
     {
       "name": "cite-dois",
