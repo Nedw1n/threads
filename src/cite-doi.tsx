@@ -16,6 +16,7 @@ import { fetchMetadata } from "./lib/crossref";
 import { buildAPACitation, buildAPACitationMarkdown } from "./lib/apa";
 
 const STORAGE_KEY = "cite-doi-references";
+const RECENT_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface StoredReference {
   doi: string;
@@ -28,7 +29,6 @@ export default function Command() {
   const [references, setReferences] = useState<StoredReference[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
-  const [mostRecentDOI, setMostRecentDOI] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,11 +50,9 @@ export default function Command() {
       const clipboardDOI = cleanDOI(inputRaw);
       const hasClipboardDOI = validateDOI(clipboardDOI);
 
-      let recentDOI: string | null = null;
-
       if (hasClipboardDOI) {
-        const alreadyExists = refs.some((r) => r.doi === clipboardDOI);
-        if (!alreadyExists) {
+        const existingIdx = refs.findIndex((r) => r.doi === clipboardDOI);
+        if (existingIdx === -1) {
           try {
             const metadata = await fetchMetadata(clipboardDOI);
             const newRef: StoredReference = {
@@ -68,21 +66,15 @@ export default function Command() {
           } catch {
             // Fetch failed – clipboard text may be a malformed DOI or network unavailable
           }
+        } else {
+          // Refresh addedAt so the "recent" badge appears for a re-encountered DOI
+          refs = refs.map((r, i) => (i === existingIdx ? { ...r, addedAt: Date.now() } : r));
+          await LocalStorage.setItem(STORAGE_KEY, JSON.stringify(refs));
         }
-        // Mark clipboard DOI as most recent if it's in the list (just added or pre-existing)
-        if (refs.some((r) => r.doi === clipboardDOI)) {
-          recentDOI = clipboardDOI;
-        }
-      }
-
-      // Fall back to the last-added reference if clipboard had no usable DOI
-      if (!recentDOI && refs.length > 0) {
-        recentDOI = refs.reduce((prev, curr) => (curr.addedAt > prev.addedAt ? curr : prev)).doi;
       }
 
       if (!cancelled) {
         setReferences(refs);
-        setMostRecentDOI(recentDOI);
         setIsLoading(false);
       }
     }
@@ -105,14 +97,12 @@ export default function Command() {
       return;
     }
 
-    // Already in list – just promote to most recent
+    // Already in list – refresh addedAt so the "recent" badge reappears
     if (references.some((r) => r.doi === cleaned)) {
-      setMostRecentDOI(cleaned);
-      await showToast({
-        style: Toast.Style.Success,
-        title: "Already in list",
-        message: "Marked as most recent",
-      });
+      const newRefs = references.map((r) => (r.doi === cleaned ? { ...r, addedAt: Date.now() } : r));
+      await persist(newRefs);
+      setReferences(newRefs);
+      await showToast({ style: Toast.Style.Success, title: "Already in list" });
       return;
     }
 
@@ -128,7 +118,6 @@ export default function Command() {
       const newRefs = [...references, newRef];
       await persist(newRefs);
       setReferences(newRefs);
-      setMostRecentDOI(cleaned);
       toast.style = Toast.Style.Success;
       toast.title = "Citation added";
     } catch {
@@ -141,29 +130,18 @@ export default function Command() {
     const newRefs = references.filter((r) => r.doi !== doi);
     await persist(newRefs);
     setReferences(newRefs);
-    if (mostRecentDOI === doi) {
-      setMostRecentDOI(
-        newRefs.length > 0
-          ? newRefs.reduce((prev, curr) => (curr.addedAt > prev.addedAt ? curr : prev)).doi
-          : null,
-      );
-    }
   }
 
   async function clearAll() {
     await LocalStorage.removeItem(STORAGE_KEY);
     setReferences([]);
-    setMostRecentDOI(null);
     await showToast({ style: Toast.Style.Success, title: "Reference list cleared" });
   }
 
-  // Sort alphabetically, most recent floated to the top
+  // Sort strictly alphabetically by citation
   const sortedAlpha = [...references].sort((a, b) =>
     a.citation.localeCompare(b.citation, undefined, { sensitivity: "base" }),
   );
-  const mostRecentRef = sortedAlpha.find((r) => r.doi === mostRecentDOI);
-  const otherRefs = sortedAlpha.filter((r) => r.doi !== mostRecentDOI);
-  const orderedRefs = mostRecentRef ? [mostRecentRef, ...otherRefs] : sortedAlpha;
 
   // Manual-entry detection: show "Add" item when search text is a valid DOI not yet in the list
   const trimmed = searchText.trim();
@@ -176,12 +154,12 @@ export default function Command() {
   // Filter references when search text is not a DOI
   const filteredRefs =
     trimmed && !validateDOI(cleanedSearch)
-      ? orderedRefs.filter(
+      ? sortedAlpha.filter(
           (r) =>
             r.citation.toLowerCase().includes(trimmed.toLowerCase()) ||
             r.doi.toLowerCase().includes(trimmed.toLowerCase()),
         )
-      : orderedRefs;
+      : sortedAlpha;
 
   const allCitations = sortedAlpha.map((r) => r.citation).join("\n\n");
 
@@ -227,16 +205,12 @@ export default function Command() {
 
       {/* Persistent reference list */}
       {filteredRefs.map((ref) => {
-        const isRecent = ref.doi === mostRecentDOI;
+        const isRecent = Date.now() - ref.addedAt < RECENT_THRESHOLD_MS;
         return (
           <List.Item
             key={ref.doi}
             title={getCitationLabel(ref)}
-            icon={
-              isRecent
-                ? { source: Icon.CircleFilled, tintColor: Color.Blue }
-                : { source: Icon.Circle, tintColor: Color.SecondaryText }
-            }
+            icon={{ source: Icon.Circle, tintColor: Color.SecondaryText }}
             accessories={
               isRecent ? [{ tag: { value: "recent", color: Color.Blue } }] : []
             }
@@ -276,11 +250,30 @@ export default function Command() {
   );
 }
 
-/** Derives a short "Author(s) (Year)" label from a plain-text APA citation string. */
+/**
+ * Derives an in-text citation label from a plain-text APA citation string.
+ * Format: "LastName (Year)" / "LastName & LastName2 (Year)" / "LastName et al. (Year)"
+ */
 function getCitationLabel(ref: StoredReference): string {
-  const match = ref.citation.match(/^(.+?)\s*\((\d{4}[a-z]?|n\.d\.)\)/);
-  if (match) {
-    return `${match[1].trim()} (${match[2]})`;
-  }
-  return ref.doi;
+  // Extract year
+  const yearMatch = ref.citation.match(/\((\d{4}[a-z]?|n\.d\.)\)/);
+  if (!yearMatch) return ref.doi;
+  const year = yearMatch[1];
+
+  // Authors section is everything before the year parenthesis
+  const authorsSection = ref.citation.slice(0, yearMatch.index).trim().replace(/\.$/, "").trim();
+
+  // Split on ", & " or " & " to find individual authors
+  // APA format: "Last, F. G., Last2, F., & Last3, F."
+  // Each author entry starts with a capitalised last name followed by a comma
+  const authorEntries = authorsSection.split(/,\s*&\s*|\s*&\s*/);
+  // Extract just the last name (text before the first comma) from each entry
+  const lastNames = authorEntries
+    .map((entry) => entry.split(",")[0].trim())
+    .filter(Boolean);
+
+  if (lastNames.length === 0) return ref.doi;
+  if (lastNames.length === 1) return `${lastNames[0]} (${year})`;
+  if (lastNames.length === 2) return `${lastNames[0]} & ${lastNames[1]} (${year})`;
+  return `${lastNames[0]} et al. (${year})`;
 }
