@@ -13,15 +13,15 @@ import {
 import { useEffect, useState } from "react";
 import { cleanDOI, validateDOI } from "./lib/doi";
 import { fetchMetadata } from "./lib/crossref";
-import { buildAPACitation, buildAPACitationMarkdown } from "./lib/apa";
+import { ArticleMetadata } from "./lib/types";
+import { buildCitation, buildCitationMarkdown, CitationFormat, FORMAT_LABELS } from "./lib/formats";
 
 const STORAGE_KEY = "cite-doi-references";
 const RECENT_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface StoredReference {
   doi: string;
-  citation: string;
-  markdown: string;
+  metadata: ArticleMetadata;
   addedAt: number;
 }
 
@@ -29,13 +29,22 @@ export default function Command() {
   const [references, setReferences] = useState<StoredReference[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
+  const [format, setFormat] = useState<CitationFormat>("apa");
 
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
       const stored = await LocalStorage.getItem<string>(STORAGE_KEY);
-      let refs: StoredReference[] = stored ? JSON.parse(stored) : [];
+      let refs: StoredReference[] = [];
+
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        // Migrate legacy records (stored citation strings → drop; metadata is required going forward)
+        refs = (parsed as Array<StoredReference & { citation?: string; markdown?: string }>)
+          .filter((r) => r.metadata != null)
+          .map(({ doi, metadata, addedAt }) => ({ doi, metadata, addedAt }));
+      }
 
       // Prefer selected text; fall back to clipboard
       let inputRaw = "";
@@ -55,12 +64,7 @@ export default function Command() {
         if (existingIdx === -1) {
           try {
             const metadata = await fetchMetadata(clipboardDOI);
-            const newRef: StoredReference = {
-              doi: clipboardDOI,
-              citation: buildAPACitation(metadata),
-              markdown: buildAPACitationMarkdown(metadata),
-              addedAt: Date.now(),
-            };
+            const newRef: StoredReference = { doi: clipboardDOI, metadata, addedAt: Date.now() };
             refs = [...refs, newRef];
             await LocalStorage.setItem(STORAGE_KEY, JSON.stringify(refs));
           } catch {
@@ -109,12 +113,7 @@ export default function Command() {
     const toast = await showToast({ style: Toast.Style.Animated, title: "Fetching citation…" });
     try {
       const metadata = await fetchMetadata(cleaned);
-      const newRef: StoredReference = {
-        doi: cleaned,
-        citation: buildAPACitation(metadata),
-        markdown: buildAPACitationMarkdown(metadata),
-        addedAt: Date.now(),
-      };
+      const newRef: StoredReference = { doi: cleaned, metadata, addedAt: Date.now() };
       const newRefs = [...references, newRef];
       await persist(newRefs);
       setReferences(newRefs);
@@ -138,10 +137,12 @@ export default function Command() {
     await showToast({ style: Toast.Style.Success, title: "Reference list cleared" });
   }
 
-  // Sort strictly alphabetically by citation
-  const sortedAlpha = [...references].sort((a, b) =>
-    a.citation.localeCompare(b.citation, undefined, { sensitivity: "base" }),
-  );
+  // Sort strictly alphabetically by the currently-active citation format
+  const sortedAlpha = [...references].sort((a, b) => {
+    const ca = buildCitation(a.metadata, format);
+    const cb = buildCitation(b.metadata, format);
+    return ca.localeCompare(cb, undefined, { sensitivity: "base" });
+  });
 
   // Manual-entry detection: show "Add" item when search text is a valid DOI not yet in the list
   const trimmed = searchText.trim();
@@ -154,18 +155,19 @@ export default function Command() {
   // Filter references when search text is not a DOI
   const filteredRefs =
     trimmed && !validateDOI(cleanedSearch)
-      ? sortedAlpha.filter(
-          (r) =>
-            r.citation.toLowerCase().includes(trimmed.toLowerCase()) ||
-            r.doi.toLowerCase().includes(trimmed.toLowerCase()),
-        )
+      ? sortedAlpha.filter((r) => {
+          const citation = buildCitation(r.metadata, format);
+          return (
+            citation.toLowerCase().includes(trimmed.toLowerCase()) ||
+            r.doi.toLowerCase().includes(trimmed.toLowerCase())
+          );
+        })
       : sortedAlpha;
-
-  const allCitations = sortedAlpha.map((r) => r.citation).join("\n\n");
 
   async function copyAll() {
     if (sortedAlpha.length === 0) return;
-    await Clipboard.copy(allCitations);
+    const all = sortedAlpha.map((r) => buildCitation(r.metadata, format)).join("\n\n");
+    await Clipboard.copy(all);
     await showToast({
       style: Toast.Style.Success,
       title: `${sortedAlpha.length} citation${sortedAlpha.length !== 1 ? "s" : ""} copied`,
@@ -179,6 +181,17 @@ export default function Command() {
       searchBarPlaceholder="Paste a DOI to add it manually…"
       onSearchTextChange={setSearchText}
       isShowingDetail
+      searchBarAccessory={
+        <List.Dropdown
+          tooltip="Citation Format"
+          value={format}
+          onChange={(val) => setFormat(val as CitationFormat)}
+        >
+          {(Object.keys(FORMAT_LABELS) as CitationFormat[]).map((f) => (
+            <List.Dropdown.Item key={f} title={FORMAT_LABELS[f]} value={f} />
+          ))}
+        </List.Dropdown>
+      }
     >
       {/* Inline manual-entry option when the search bar contains a new valid DOI */}
       {isSearchNewDOI && (
@@ -188,7 +201,7 @@ export default function Command() {
           icon={Icon.Plus}
           detail={
             <List.Item.Detail
-              markdown={`### Add Reference\n\nFetch APA citation for:\n\n\`${cleanedSearch}\``}
+              markdown={`### Add Reference\n\nFetch ${FORMAT_LABELS[format]} citation for:\n\n\`${cleanedSearch}\``}
             />
           }
           actions={
@@ -206,18 +219,18 @@ export default function Command() {
       {/* Persistent reference list */}
       {filteredRefs.map((ref) => {
         const isRecent = Date.now() - ref.addedAt < RECENT_THRESHOLD_MS;
+        const citation = buildCitation(ref.metadata, format);
+        const citationMd = buildCitationMarkdown(ref.metadata, format);
         return (
           <List.Item
             key={ref.doi}
-            title={getCitationLabel(ref)}
+            title={getCitationLabel(ref.metadata)}
             icon={{ source: Icon.Circle, tintColor: Color.SecondaryText }}
-            accessories={
-              isRecent ? [{ tag: { value: "recent", color: Color.Blue } }] : []
-            }
-            detail={<List.Item.Detail markdown={`### Citation\n\n${ref.markdown}`} />}
+            accessories={isRecent ? [{ tag: { value: "recent", color: Color.Blue } }] : []}
+            detail={<List.Item.Detail markdown={`### Citation\n\n${citationMd}`} />}
             actions={
               <ActionPanel>
-                <Action.CopyToClipboard title="Copy Citation" content={ref.citation} />
+                <Action.CopyToClipboard title="Copy Citation" content={citation} />
                 {sortedAlpha.length > 1 && (
                   <Action
                     title={`Copy All ${sortedAlpha.length} Citations`}
@@ -250,30 +263,24 @@ export default function Command() {
   );
 }
 
-/**
- * Derives an in-text citation label from a plain-text APA citation string.
- * Format: "LastName (Year)" / "LastName & LastName2 (Year)" / "LastName et al. (Year)"
- */
-function getCitationLabel(ref: StoredReference): string {
-  // Extract year
-  const yearMatch = ref.citation.match(/\((\d{4}[a-z]?|n\.d\.)\)/);
-  if (!yearMatch) return ref.doi;
-  const year = yearMatch[1];
+/** Derives an in-text citation label directly from raw metadata. */
+function getCitationLabel(metadata: ArticleMetadata): string {
+  const year = metadata.year || "n.d.";
+  const authors = metadata.authors;
 
-  // Authors section is everything before the year parenthesis
-  const authorsSection = ref.citation.slice(0, yearMatch.index).trim().replace(/\.$/, "").trim();
+  if (authors.length === 0) return metadata.doi;
 
-  // Split on ", & " or " & " to find individual authors
-  // APA format: "Last, F. G., Last2, F., & Last3, F."
-  // Each author entry starts with a capitalised last name followed by a comma
-  const authorEntries = authorsSection.split(/,\s*&\s*|\s*&\s*/);
-  // Extract just the last name (text before the first comma) from each entry
-  const lastNames = authorEntries
-    .map((entry) => entry.split(",")[0].trim())
-    .filter(Boolean);
+  const first = authors[0];
+  const firstName = first.family || first.name || "";
+  if (!firstName) return metadata.doi;
 
-  if (lastNames.length === 0) return ref.doi;
-  if (lastNames.length === 1) return `${lastNames[0]} (${year})`;
-  if (lastNames.length === 2) return `${lastNames[0]} & ${lastNames[1]} (${year})`;
-  return `${lastNames[0]} et al. (${year})`;
+  if (authors.length === 1) return `${firstName} (${year})`;
+
+  if (authors.length === 2) {
+    const second = authors[1];
+    const secondName = second.family || second.name || "";
+    return `${firstName} & ${secondName} (${year})`;
+  }
+
+  return `${firstName} et al. (${year})`;
 }
