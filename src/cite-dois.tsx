@@ -2,8 +2,8 @@ import { Action, ActionPanel, Clipboard, Form, Icon, List, showToast, Toast, use
 import { useEffect, useState } from "react";
 import { parseBatchInput } from "./lib/doi";
 import { fetchMetadata } from "./lib/crossref";
-import { buildAPACitation, buildAPACitationMarkdown } from "./lib/apa";
 import { ArticleMetadata, CitationResult } from "./lib/types";
+import { buildCitation, buildCitationMarkdown, CitationFormat, FORMAT_LABELS } from "./lib/formats";
 
 const EMPTY_METADATA: ArticleMetadata = {
   authors: [],
@@ -56,6 +56,7 @@ export default function Command() {
 function CitationResults({ dois }: { dois: string[] }) {
   const [results, setResults] = useState<CitationResult[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [format, setFormat] = useState<CitationFormat>("apa");
 
   useEffect(() => {
     let cancelled = false;
@@ -72,8 +73,7 @@ function CitationResults({ dois }: { dois: string[] }) {
         if (cancelled) return;
         try {
           const metadata = await fetchMetadata(doi);
-          const citation = buildAPACitation(metadata);
-          fetched.push({ doi, metadata, citation });
+          fetched.push({ doi, metadata, citation: buildCitation(metadata, "apa") });
         } catch (e) {
           fetched.push({
             doi,
@@ -86,7 +86,7 @@ function CitationResults({ dois }: { dois: string[] }) {
 
       if (cancelled) return;
 
-      // Sort: successful citations alphabetically (APA), errors at end
+      // Sort: successful citations alphabetically (APA default), errors at end
       fetched.sort((a, b) => {
         if (a.error && !b.error) return 1;
         if (!a.error && b.error) return -1;
@@ -117,46 +117,64 @@ function CitationResults({ dois }: { dois: string[] }) {
   const successResults = results.filter((r) => !r.error);
 
   async function copyAllCitations() {
-    const all = successResults.map((r) => r.citation).join("\n\n");
+    const all = successResults.map((r) => buildCitation(r.metadata, format)).join("\n\n");
     await Clipboard.copy(all);
     await showToast({ style: Toast.Style.Success, title: "All citations copied" });
   }
 
   return (
-    <List isLoading={isLoading} isShowingDetail>
-      {results.map((result) => (
-        <List.Item
-          key={result.doi}
-          title={result.error ? result.doi : getShortLabel(result)}
-          icon={result.error ? Icon.ExclamationMark : Icon.Document}
-          detail={
-            <List.Item.Detail
-              markdown={
-                result.error
-                  ? `### Error\n\nFailed to fetch citation for \`${result.doi}\`:\n\n${result.error}`
-                  : `### Citation\n\n${buildAPACitationMarkdown(result.metadata)}\n\n---\n*Plain text copied to clipboard on action.*`
-              }
-            />
-          }
-          actions={
-            <ActionPanel>
-              {!result.error && (
-                <>
-                  <Action.CopyToClipboard title="Copy Citation" content={result.citation} />
-                  {successResults.length > 1 && (
-                    <Action title="Copy All Citations" icon={Icon.Clipboard} onAction={copyAllCitations} />
-                  )}
-                  <Action.Paste title="Paste Citation" content={result.citation} />
+    <List
+      isLoading={isLoading}
+      isShowingDetail
+      searchBarAccessory={
+        <List.Dropdown
+          tooltip="Citation Format"
+          value={format}
+          onChange={(val) => setFormat(val as CitationFormat)}
+        >
+          {(Object.keys(FORMAT_LABELS) as CitationFormat[]).map((f) => (
+            <List.Dropdown.Item key={f} title={FORMAT_LABELS[f]} value={f} />
+          ))}
+        </List.Dropdown>
+      }
+    >
+      {results.map((result) => {
+        const citation = result.error ? "" : buildCitation(result.metadata, format);
+        const citationMd = result.error ? "" : buildCitationMarkdown(result.metadata, format);
+        return (
+          <List.Item
+            key={result.doi}
+            title={result.error ? result.doi : getShortLabel(result)}
+            icon={result.error ? Icon.ExclamationMark : Icon.Document}
+            detail={
+              <List.Item.Detail
+                markdown={
+                  result.error
+                    ? `### Error\n\nFailed to fetch citation for \`${result.doi}\`:\n\n${result.error}`
+                    : `### Citation\n\n${citationMd}\n\n---\n*Plain text copied to clipboard on action.*`
+                }
+              />
+            }
+            actions={
+              <ActionPanel>
+                {!result.error && (
+                  <>
+                    <Action.CopyToClipboard title="Copy Citation" content={citation} />
+                    {successResults.length > 1 && (
+                      <Action title="Copy All Citations" icon={Icon.Clipboard} onAction={copyAllCitations} />
+                    )}
+                    <Action.Paste title="Paste Citation" content={citation} />
+                    <Action.OpenInBrowser title="Open DOI in Browser" url={`https://doi.org/${result.doi}`} />
+                  </>
+                )}
+                {result.error && (
                   <Action.OpenInBrowser title="Open DOI in Browser" url={`https://doi.org/${result.doi}`} />
-                </>
-              )}
-              {result.error && (
-                <Action.OpenInBrowser title="Open DOI in Browser" url={`https://doi.org/${result.doi}`} />
-              )}
-            </ActionPanel>
-          }
-        />
-      ))}
+                )}
+              </ActionPanel>
+            }
+          />
+        );
+      })}
     </List>
   );
 }
