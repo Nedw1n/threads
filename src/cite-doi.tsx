@@ -1,50 +1,32 @@
-import {
-  Action,
-  ActionPanel,
-  Clipboard,
-  Color,
-  getSelectedText,
-  Icon,
-  List,
-  LocalStorage,
-  showToast,
-  Toast,
-} from "@raycast/api";
+import { Action, ActionPanel, Clipboard, Color, getSelectedText, Icon, List, showToast, Toast } from "@raycast/api";
 import { useEffect, useState } from "react";
 import { cleanDOI, validateDOI } from "./lib/doi";
 import { fetchMetadata } from "./lib/crossref";
 import { ArticleMetadata } from "./lib/types";
 import { buildCitation, buildCitationMarkdown, CitationFormat, FORMAT_LABELS } from "./lib/formats";
+import { CitationList, StoredReference, loadListsState, persistLists, updateListReferences } from "./lib/lists";
+import ManageListsCommand, { CreateListForm } from "./cite-lists";
 
-const STORAGE_KEY = "cite-doi-references";
 const RECENT_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-interface StoredReference {
-  doi: string;
-  metadata: ArticleMetadata;
-  addedAt: number;
-}
-
 export default function Command() {
-  const [references, setReferences] = useState<StoredReference[]>([]);
+  const [lists, setLists] = useState<CitationList[]>([]);
+  const [activeId, setActiveId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
   const [format, setFormat] = useState<CitationFormat>("apa");
+
+  const activeList = lists.find((l) => l.id === activeId);
+  const references = activeList?.references ?? [];
 
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
-      const stored = await LocalStorage.getItem<string>(STORAGE_KEY);
-      let refs: StoredReference[] = [];
-
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        // Migrate legacy records (stored citation strings → drop; metadata is required going forward)
-        refs = (parsed as Array<StoredReference & { citation?: string; markdown?: string }>)
-          .filter((r) => r.metadata != null)
-          .map(({ doi, metadata, addedAt }) => ({ doi, metadata, addedAt }));
-      }
+      const state = await loadListsState();
+      let currentLists = state.lists;
+      const currentActiveId = state.activeId;
+      const activeListObj = currentLists.find((l) => l.id === currentActiveId);
 
       // Prefer selected text; fall back to clipboard
       let inputRaw = "";
@@ -59,26 +41,30 @@ export default function Command() {
       const clipboardDOI = cleanDOI(inputRaw);
       const hasClipboardDOI = validateDOI(clipboardDOI);
 
-      if (hasClipboardDOI) {
+      if (hasClipboardDOI && activeListObj) {
+        const refs = activeListObj.references;
         const existingIdx = refs.findIndex((r) => r.doi === clipboardDOI);
         if (existingIdx === -1) {
           try {
             const metadata = await fetchMetadata(clipboardDOI);
             const newRef: StoredReference = { doi: clipboardDOI, metadata, addedAt: Date.now() };
-            refs = [...refs, newRef];
-            await LocalStorage.setItem(STORAGE_KEY, JSON.stringify(refs));
+            const newRefs = [...refs, newRef];
+            currentLists = updateListReferences(currentLists, currentActiveId, newRefs);
+            await persistLists(currentLists);
           } catch {
             // Fetch failed – clipboard text may be a malformed DOI or network unavailable
           }
         } else {
           // Refresh addedAt so the "recent" badge appears for a re-encountered DOI
-          refs = refs.map((r, i) => (i === existingIdx ? { ...r, addedAt: Date.now() } : r));
-          await LocalStorage.setItem(STORAGE_KEY, JSON.stringify(refs));
+          const newRefs = refs.map((r, i) => (i === existingIdx ? { ...r, addedAt: Date.now() } : r));
+          currentLists = updateListReferences(currentLists, currentActiveId, newRefs);
+          await persistLists(currentLists);
         }
       }
 
       if (!cancelled) {
-        setReferences(refs);
+        setLists(currentLists);
+        setActiveId(currentActiveId);
         setIsLoading(false);
       }
     }
@@ -89,8 +75,11 @@ export default function Command() {
     };
   }, []);
 
-  async function persist(refs: StoredReference[]) {
-    await LocalStorage.setItem(STORAGE_KEY, JSON.stringify(refs));
+  /** Persists and updates state for a new references array on the active list. */
+  async function setActiveReferences(newRefs: StoredReference[]) {
+    const newLists = updateListReferences(lists, activeId, newRefs);
+    await persistLists(newLists);
+    setLists(newLists);
   }
 
   async function addDOI(rawDOI: string) {
@@ -104,8 +93,7 @@ export default function Command() {
     // Already in list – refresh addedAt so the "recent" badge reappears
     if (references.some((r) => r.doi === cleaned)) {
       const newRefs = references.map((r) => (r.doi === cleaned ? { ...r, addedAt: Date.now() } : r));
-      await persist(newRefs);
-      setReferences(newRefs);
+      await setActiveReferences(newRefs);
       await showToast({ style: Toast.Style.Success, title: "Already in list" });
       return;
     }
@@ -114,9 +102,7 @@ export default function Command() {
     try {
       const metadata = await fetchMetadata(cleaned);
       const newRef: StoredReference = { doi: cleaned, metadata, addedAt: Date.now() };
-      const newRefs = [...references, newRef];
-      await persist(newRefs);
-      setReferences(newRefs);
+      await setActiveReferences([...references, newRef]);
       toast.style = Toast.Style.Success;
       toast.title = "Citation added";
     } catch {
@@ -126,15 +112,25 @@ export default function Command() {
   }
 
   async function removeReference(doi: string) {
-    const newRefs = references.filter((r) => r.doi !== doi);
-    await persist(newRefs);
-    setReferences(newRefs);
+    await setActiveReferences(references.filter((r) => r.doi !== doi));
   }
 
   async function clearAll() {
-    await LocalStorage.removeItem(STORAGE_KEY);
-    setReferences([]);
-    await showToast({ style: Toast.Style.Success, title: "Reference list cleared" });
+    await setActiveReferences([]);
+    await showToast({
+      style: Toast.Style.Success,
+      title: `Cleared "${activeList?.name ?? "list"}"`,
+    });
+  }
+
+  /**
+   * Shared callback used both by CreateListForm (on submit) and by the pushed cite-lists
+   * view (on every change). The child has already persisted to LocalStorage; we only mirror
+   * the new state into our own useState so the view reflects it immediately.
+   */
+  function syncFromChild(newLists: CitationList[], newActiveId: string) {
+    setLists(newLists);
+    setActiveId(newActiveId);
   }
 
   // Sort strictly alphabetically by the currently-active citation format
@@ -148,9 +144,7 @@ export default function Command() {
   const trimmed = searchText.trim();
   const cleanedSearch = cleanDOI(trimmed);
   const isSearchNewDOI =
-    trimmed.length > 0 &&
-    validateDOI(cleanedSearch) &&
-    !references.some((r) => r.doi === cleanedSearch);
+    trimmed.length > 0 && validateDOI(cleanedSearch) && !references.some((r) => r.doi === cleanedSearch);
 
   // Filter references when search text is not a DOI
   const filteredRefs =
@@ -174,24 +168,40 @@ export default function Command() {
     });
   }
 
+  // List-management actions — appended to every ActionPanel so they're always reachable
+  const listManagementActions = (
+    <ActionPanel.Section title="Lists">
+      <Action.Push
+        title="Start New List"
+        icon={Icon.NewDocument}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "n" }}
+        target={<CreateListForm onCreated={syncFromChild} />}
+      />
+      <Action.Push
+        title="Manage Lists…"
+        icon={Icon.List}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "l" }}
+        target={<ManageListsCommand onStateChange={syncFromChild} />}
+      />
+    </ActionPanel.Section>
+  );
+
   return (
     <List
       isLoading={isLoading}
       filtering={false}
+      navigationTitle={activeList ? `Cite DOI · ${activeList.name}` : "Cite DOI"}
       searchBarPlaceholder="Paste a DOI to add it manually…"
       onSearchTextChange={setSearchText}
       isShowingDetail
       searchBarAccessory={
-        <List.Dropdown
-          tooltip="Citation Format"
-          value={format}
-          onChange={(val) => setFormat(val as CitationFormat)}
-        >
+        <List.Dropdown tooltip="Citation Format" value={format} onChange={(val) => setFormat(val as CitationFormat)}>
           {(Object.keys(FORMAT_LABELS) as CitationFormat[]).map((f) => (
             <List.Dropdown.Item key={f} title={FORMAT_LABELS[f]} value={f} />
           ))}
         </List.Dropdown>
       }
+      actions={<ActionPanel>{listManagementActions}</ActionPanel>}
     >
       {/* Inline manual-entry option when the search bar contains a new valid DOI */}
       {isSearchNewDOI && (
@@ -201,16 +211,13 @@ export default function Command() {
           icon={Icon.Plus}
           detail={
             <List.Item.Detail
-              markdown={`### Add Reference\n\nFetch ${FORMAT_LABELS[format]} citation for:\n\n\`${cleanedSearch}\``}
+              markdown={`### Add Reference\n\nFetch ${FORMAT_LABELS[format]} citation for:\n\n\`${cleanedSearch}\`\n\nWill be added to **${activeList?.name ?? "current list"}**.`}
             />
           }
           actions={
             <ActionPanel>
-              <Action
-                title="Fetch & Add Citation"
-                icon={Icon.Plus}
-                onAction={() => addDOI(trimmed)}
-              />
+              <Action title="Fetch & Add Citation" icon={Icon.Plus} onAction={() => addDOI(trimmed)} />
+              {listManagementActions}
             </ActionPanel>
           }
         />
@@ -248,12 +255,13 @@ export default function Command() {
                     onAction={() => removeReference(ref.doi)}
                   />
                   <Action
-                    title="Clear All References"
+                    title={`Clear "${activeList?.name ?? "List"}"`}
                     icon={Icon.Trash}
                     style={Action.Style.Destructive}
                     onAction={clearAll}
                   />
                 </ActionPanel.Section>
+                {listManagementActions}
               </ActionPanel>
             }
           />
