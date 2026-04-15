@@ -3,7 +3,13 @@ import { useEffect, useState } from "react";
 import { cleanDOI, validateDOI } from "./lib/doi";
 import { fetchMetadata } from "./lib/crossref";
 import { ArticleMetadata } from "./lib/types";
-import { buildCitation, buildCitationMarkdown, CitationFormat, FORMAT_LABELS } from "./lib/formats";
+import {
+  buildCitation,
+  buildCitationMarkdown,
+  buildInTextParenthetical,
+  CitationFormat,
+  FORMAT_LABELS,
+} from "./lib/formats";
 import { CitationList, StoredReference, loadListsState, persistLists, updateListReferences } from "./lib/lists";
 import ManageListsCommand, { CreateListForm } from "./cite-lists";
 
@@ -224,11 +230,16 @@ export default function Command() {
       )}
 
       {/* Persistent reference list */}
-      {filteredRefs.map((ref) => {
-        const isRecent = Date.now() - ref.addedAt < RECENT_THRESHOLD_MS;
-        const citation = buildCitation(ref.metadata, format);
-        const citationMd = buildCitationMarkdown(ref.metadata, format);
-        return (
+      {(() => {
+        // The "recent" tag marks only the single most-recent add. If multiple refs share
+        // the max addedAt (e.g., batch import), they all get tagged.
+        const maxAddedAt = references.length > 0 ? Math.max(...references.map((r) => r.addedAt)) : 0;
+        return filteredRefs.map((ref) => {
+          const isRecent = ref.addedAt === maxAddedAt && Date.now() - ref.addedAt < RECENT_THRESHOLD_MS;
+          const citation = buildCitation(ref.metadata, format);
+          const citationMd = buildCitationMarkdown(ref.metadata, format);
+          const parenthetical = buildInTextParenthetical(ref.metadata, format);
+          return (
           <List.Item
             key={ref.doi}
             title={getCitationLabel(ref.metadata)}
@@ -238,6 +249,11 @@ export default function Command() {
             actions={
               <ActionPanel>
                 <Action.CopyToClipboard title="Copy Citation" content={citation} />
+                <Action.CopyToClipboard
+                  title="Copy In-Text Citation"
+                  content={parenthetical}
+                  shortcut={{ modifiers: ["shift"], key: "return" }}
+                />
                 {sortedAlpha.length > 1 && (
                   <Action
                     title={`Copy All ${sortedAlpha.length} Citations`}
@@ -265,8 +281,9 @@ export default function Command() {
               </ActionPanel>
             }
           />
-        );
-      })}
+          );
+        });
+      })()}
     </List>
   );
 }
