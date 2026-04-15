@@ -18,7 +18,13 @@
     {
       "name": "cite-doi",
       "title": "Cite DOI",
-      "description": "Auto-detects a DOI from clipboard, adds it to a persistent reference list, and lets you copy citations",
+      "description": "Auto-detects a DOI from clipboard, adds it to the active citation list, and lets you copy citations",
+      "mode": "view"
+    },
+    {
+      "name": "cite-lists",
+      "title": "Citation Lists",
+      "description": "Manage citation lists — switch the active list, rename, duplicate, delete, and copy all citations from any list",
       "mode": "view"
     },
     {
