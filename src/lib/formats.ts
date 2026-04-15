@@ -255,6 +255,51 @@ export function buildChicagoCitationMarkdown(metadata: ArticleMetadata): string 
   return citation;
 }
 
+// ─── Parenthetical in-text citation ────────────────────────────────────────────
+
+/** Surname for in-text citations — prefers `family`, falls back to `name`. */
+function authorShortName(a: Author): string {
+  return a.family || a.name || "";
+}
+
+/**
+ * Build a parenthetical in-text citation for the given format.
+ * - APA:     (Smith, 2020) / (Smith & Jones, 2020) / (Smith et al., 2020)
+ * - MLA:     (Smith) / (Smith and Jones) / (Smith et al.)
+ * - Chicago: (Smith 2020) / (Smith and Jones 2020) / (Smith et al. 2020)
+ */
+export function buildInTextParenthetical(metadata: ArticleMetadata, format: CitationFormat): string {
+  const authors = metadata.authors;
+  const year = metadata.year || "n.d.";
+
+  if (authors.length === 0) {
+    if (format === "mla") return `("${metadata.title}")`;
+    return `("${metadata.title}", ${year})`;
+  }
+
+  const first = authorShortName(authors[0]);
+  let who: string;
+  if (authors.length === 1) {
+    who = first;
+  } else if (authors.length === 2) {
+    const second = authorShortName(authors[1]);
+    const joiner = format === "apa" ? "&" : "and";
+    who = `${first} ${joiner} ${second}`;
+  } else {
+    who = `${first} et al.`;
+  }
+
+  switch (format) {
+    case "mla":
+      return `(${who})`;
+    case "chicago":
+      return `(${who} ${year})`;
+    case "apa":
+    default:
+      return `(${who}, ${year})`;
+  }
+}
+
 // ─── Unified dispatch ──────────────────────────────────────────────────────────
 
 export function buildCitation(metadata: ArticleMetadata, format: CitationFormat): string {
