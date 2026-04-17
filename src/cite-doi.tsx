@@ -2,7 +2,7 @@ import { Action, ActionPanel, Clipboard, Color, getSelectedText, Icon, List, sho
 import { useEffect, useState } from "react";
 import { cleanDOI, validateDOI } from "./lib/doi";
 import { fetchMetadata } from "./lib/crossref";
-import { ArticleMetadata } from "./lib/types";
+import { ReferenceMetadata } from "./lib/types";
 import {
   buildCitation,
   buildCitationMarkdown,
@@ -49,11 +49,11 @@ export default function Command() {
 
       if (hasClipboardDOI && activeListObj) {
         const refs = activeListObj.references;
-        const existingIdx = refs.findIndex((r) => r.doi === clipboardDOI);
+        const existingIdx = refs.findIndex((r) => r.id === clipboardDOI);
         if (existingIdx === -1) {
           try {
             const metadata = await fetchMetadata(clipboardDOI);
-            const newRef: StoredReference = { doi: clipboardDOI, metadata, addedAt: Date.now() };
+            const newRef: StoredReference = { id: clipboardDOI, metadata, addedAt: Date.now() };
             const newRefs = [...refs, newRef];
             currentLists = updateListReferences(currentLists, currentActiveId, newRefs);
             await persistLists(currentLists);
@@ -97,8 +97,8 @@ export default function Command() {
     }
 
     // Already in list – refresh addedAt so the "recent" badge reappears
-    if (references.some((r) => r.doi === cleaned)) {
-      const newRefs = references.map((r) => (r.doi === cleaned ? { ...r, addedAt: Date.now() } : r));
+    if (references.some((r) => r.id === cleaned)) {
+      const newRefs = references.map((r) => (r.id === cleaned ? { ...r, addedAt: Date.now() } : r));
       await setActiveReferences(newRefs);
       await showToast({ style: Toast.Style.Success, title: "Already in list" });
       return;
@@ -107,7 +107,7 @@ export default function Command() {
     const toast = await showToast({ style: Toast.Style.Animated, title: "Fetching citation…" });
     try {
       const metadata = await fetchMetadata(cleaned);
-      const newRef: StoredReference = { doi: cleaned, metadata, addedAt: Date.now() };
+      const newRef: StoredReference = { id: cleaned, metadata, addedAt: Date.now() };
       await setActiveReferences([...references, newRef]);
       toast.style = Toast.Style.Success;
       toast.title = "Citation added";
@@ -117,8 +117,8 @@ export default function Command() {
     }
   }
 
-  async function removeReference(doi: string) {
-    await setActiveReferences(references.filter((r) => r.doi !== doi));
+  async function removeReference(id: string) {
+    await setActiveReferences(references.filter((r) => r.id !== id));
   }
 
   async function clearAll() {
@@ -150,7 +150,7 @@ export default function Command() {
   const trimmed = searchText.trim();
   const cleanedSearch = cleanDOI(trimmed);
   const isSearchNewDOI =
-    trimmed.length > 0 && validateDOI(cleanedSearch) && !references.some((r) => r.doi === cleanedSearch);
+    trimmed.length > 0 && validateDOI(cleanedSearch) && !references.some((r) => r.id === cleanedSearch);
 
   // Filter references when search text is not a DOI
   const filteredRefs =
@@ -158,8 +158,7 @@ export default function Command() {
       ? sortedAlpha.filter((r) => {
           const citation = buildCitation(r.metadata, format);
           return (
-            citation.toLowerCase().includes(trimmed.toLowerCase()) ||
-            r.doi.toLowerCase().includes(trimmed.toLowerCase())
+            citation.toLowerCase().includes(trimmed.toLowerCase()) || r.id.toLowerCase().includes(trimmed.toLowerCase())
           );
         })
       : sortedAlpha;
@@ -240,47 +239,50 @@ export default function Command() {
           const citationMd = buildCitationMarkdown(ref.metadata, format);
           const parenthetical = buildInTextParenthetical(ref.metadata, format);
           return (
-          <List.Item
-            key={ref.doi}
-            title={getCitationLabel(ref.metadata)}
-            icon={{ source: Icon.Circle, tintColor: Color.SecondaryText }}
-            accessories={isRecent ? [{ tag: { value: "recent", color: Color.Blue } }] : []}
-            detail={<List.Item.Detail markdown={`### Citation\n\n${citationMd}`} />}
-            actions={
-              <ActionPanel>
-                <Action.CopyToClipboard title="Copy Citation" content={citation} />
-                <Action.CopyToClipboard
-                  title="Copy In-Text Citation"
-                  content={parenthetical}
-                  shortcut={{ modifiers: ["shift"], key: "return" }}
-                />
-                {sortedAlpha.length > 1 && (
-                  <Action
-                    title={`Copy All ${sortedAlpha.length} Citations`}
-                    icon={Icon.Clipboard}
-                    shortcut={{ modifiers: ["cmd"], key: "return" }}
-                    onAction={copyAll}
+            <List.Item
+              key={ref.id}
+              title={getCitationLabel(ref.metadata)}
+              icon={{
+                source: ref.metadata.kind === "webpage" ? Icon.Globe : Icon.Circle,
+                tintColor: Color.SecondaryText,
+              }}
+              accessories={isRecent ? [{ tag: { value: "recent", color: Color.Blue } }] : []}
+              detail={<List.Item.Detail markdown={`### Citation\n\n${citationMd}`} />}
+              actions={
+                <ActionPanel>
+                  <Action.CopyToClipboard title="Copy Citation" content={citation} />
+                  <Action.CopyToClipboard
+                    title="Copy In-Text Citation"
+                    content={parenthetical}
+                    shortcut={{ modifiers: ["shift"], key: "return" }}
                   />
-                )}
-                <ActionPanel.Section>
-                  <Action
-                    title="Remove from List"
-                    icon={Icon.Trash}
-                    style={Action.Style.Destructive}
-                    shortcut={{ modifiers: ["ctrl"], key: "x" }}
-                    onAction={() => removeReference(ref.doi)}
-                  />
-                  <Action
-                    title={`Clear "${activeList?.name ?? "List"}"`}
-                    icon={Icon.Trash}
-                    style={Action.Style.Destructive}
-                    onAction={clearAll}
-                  />
-                </ActionPanel.Section>
-                {listManagementActions}
-              </ActionPanel>
-            }
-          />
+                  {sortedAlpha.length > 1 && (
+                    <Action
+                      title={`Copy All ${sortedAlpha.length} Citations`}
+                      icon={Icon.Clipboard}
+                      shortcut={{ modifiers: ["cmd"], key: "return" }}
+                      onAction={copyAll}
+                    />
+                  )}
+                  <ActionPanel.Section>
+                    <Action
+                      title="Remove from List"
+                      icon={Icon.Trash}
+                      style={Action.Style.Destructive}
+                      shortcut={{ modifiers: ["ctrl"], key: "x" }}
+                      onAction={() => removeReference(ref.id)}
+                    />
+                    <Action
+                      title={`Clear "${activeList?.name ?? "List"}"`}
+                      icon={Icon.Trash}
+                      style={Action.Style.Destructive}
+                      onAction={clearAll}
+                    />
+                  </ActionPanel.Section>
+                  {listManagementActions}
+                </ActionPanel>
+              }
+            />
           );
         });
       })()}
@@ -289,15 +291,16 @@ export default function Command() {
 }
 
 /** Derives an in-text citation label directly from raw metadata. */
-function getCitationLabel(metadata: ArticleMetadata): string {
+function getCitationLabel(metadata: ReferenceMetadata): string {
   const year = metadata.year || "n.d.";
   const authors = metadata.authors;
+  const fallback = metadata.kind === "article" ? metadata.doi : metadata.url || metadata.title;
 
-  if (authors.length === 0) return metadata.doi;
+  if (authors.length === 0) return fallback;
 
   const first = authors[0];
   const firstName = first.family || first.name || "";
-  if (!firstName) return metadata.doi;
+  if (!firstName) return fallback;
 
   if (authors.length === 1) return `${firstName} (${year})`;
 

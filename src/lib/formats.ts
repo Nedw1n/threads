@@ -2,8 +2,16 @@
  * Unified citation formatting: APA 7th, MLA 9th, Chicago Author-Date.
  */
 
-import { ArticleMetadata, Author } from "./types";
-import { buildAPACitation, buildAPACitationMarkdown, formatAuthorsAPA, toSentenceCase } from "./apa";
+import { ArticleMetadata, Author, ReferenceMetadata } from "./types";
+import { buildAPACitation, buildAPACitationMarkdown, toSentenceCase } from "./apa";
+import {
+  buildAPAWebCitation,
+  buildAPAWebCitationMarkdown,
+  buildChicagoWebCitation,
+  buildChicagoWebCitationMarkdown,
+  buildMLAWebCitation,
+  buildMLAWebCitationMarkdown,
+} from "./web-formats";
 
 export type CitationFormat = "apa" | "mla" | "chicago";
 
@@ -42,7 +50,21 @@ function formatPages(pages: string): string {
  */
 function toTitleCase(s: string): string {
   const minors = new Set([
-    "a", "an", "the", "and", "but", "or", "for", "nor", "on", "at", "to", "by", "in", "of", "up",
+    "a",
+    "an",
+    "the",
+    "and",
+    "but",
+    "or",
+    "for",
+    "nor",
+    "on",
+    "at",
+    "to",
+    "by",
+    "in",
+    "of",
+    "up",
   ]);
   return s
     .split(/\s+/)
@@ -78,8 +100,7 @@ function formatAuthorsMLA(authors: Author[]): string {
   }
 
   if (authors.length === 1) return firstAuthorFormatted(authors[0]);
-  if (authors.length === 2)
-    return `${firstAuthorFormatted(authors[0])}, and ${subsequentAuthorFormatted(authors[1])}`;
+  if (authors.length === 2) return `${firstAuthorFormatted(authors[0])}, and ${subsequentAuthorFormatted(authors[1])}`;
 
   // 3+ → et al.
   return `${firstAuthorFormatted(authors[0])}, et al.`;
@@ -268,7 +289,7 @@ function authorShortName(a: Author): string {
  * - MLA:     (Smith) / (Smith and Jones) / (Smith et al.)
  * - Chicago: (Smith 2020) / (Smith and Jones 2020) / (Smith et al. 2020)
  */
-export function buildInTextParenthetical(metadata: ArticleMetadata, format: CitationFormat): string {
+export function buildInTextParenthetical(metadata: ReferenceMetadata, format: CitationFormat): string {
   const authors = metadata.authors;
   const year = metadata.year || "n.d.";
 
@@ -302,7 +323,18 @@ export function buildInTextParenthetical(metadata: ArticleMetadata, format: Cita
 
 // ─── Unified dispatch ──────────────────────────────────────────────────────────
 
-export function buildCitation(metadata: ArticleMetadata, format: CitationFormat): string {
+export function buildCitation(metadata: ReferenceMetadata, format: CitationFormat): string {
+  if (metadata.kind === "webpage") {
+    switch (format) {
+      case "mla":
+        return buildMLAWebCitation(metadata);
+      case "chicago":
+        return buildChicagoWebCitation(metadata);
+      case "apa":
+      default:
+        return buildAPAWebCitation(metadata);
+    }
+  }
   switch (format) {
     case "mla":
       return buildMLACitation(metadata);
@@ -314,7 +346,18 @@ export function buildCitation(metadata: ArticleMetadata, format: CitationFormat)
   }
 }
 
-export function buildCitationMarkdown(metadata: ArticleMetadata, format: CitationFormat): string {
+export function buildCitationMarkdown(metadata: ReferenceMetadata, format: CitationFormat): string {
+  if (metadata.kind === "webpage") {
+    switch (format) {
+      case "mla":
+        return buildMLAWebCitationMarkdown(metadata);
+      case "chicago":
+        return buildChicagoWebCitationMarkdown(metadata);
+      case "apa":
+      default:
+        return buildAPAWebCitationMarkdown(metadata);
+    }
+  }
   switch (format) {
     case "mla":
       return buildMLACitationMarkdown(metadata);

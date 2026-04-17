@@ -64,6 +64,7 @@ export async function fetchMetadata(doi: string): Promise<ArticleMetadata> {
   const raw = json.message;
 
   return {
+    kind: "article",
     authors: raw.author || [],
     year: extractYear(raw),
     title: raw.title?.[0] || "",
