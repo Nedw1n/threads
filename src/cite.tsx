@@ -5,7 +5,6 @@ import {
   Color,
   Form,
   getPreferenceValues,
-  getSelectedText,
   Icon,
   List,
   open,
@@ -16,6 +15,8 @@ import {
 import { runAppleScript } from "@raycast/utils";
 import { useEffect, useState } from "react";
 import { resolveUrl, normalizeUrl, ResolveResult } from "./lib/urlresolver";
+import { cleanDOI, validateDOI } from "./lib/doi";
+import { fetchMetadata as fetchCrossref } from "./lib/crossref";
 import { Author, WebpageMetadata } from "./lib/types";
 import {
   buildCitation,
@@ -34,7 +35,13 @@ interface Preferences {
   focusBrowserOnMissingFields: boolean;
 }
 
-export default function Command() {
+export interface CiteCommandProps {
+  /** Called on mount; if provided, its return value is resolved as the initial citation input. */
+  getInitialInput?: () => Promise<string | null>;
+}
+
+/** Core Cite command. Accepts an optional async function to supply the initial DOI/URL input. */
+export function CiteCommand({ getInitialInput }: CiteCommandProps) {
   const [lists, setLists] = useState<CitationList[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
@@ -45,6 +52,7 @@ export default function Command() {
   const activeList = lists.find((l) => l.id === activeId);
   const references = activeList?.references ?? [];
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     let cancelled = false;
 
@@ -53,55 +61,74 @@ export default function Command() {
       let currentLists = state.lists;
       const currentActiveId = state.activeId;
 
-      // Prefer selected text; fall back to clipboard
-      let inputRaw = "";
-      try {
-        inputRaw = (await getSelectedText()).trim();
-      } catch {
-        // No selection available
-      }
-      const normalized = normalizeUrl(inputRaw) ?? normalizeUrl((await Clipboard.readText())?.trim() ?? "");
-
-      if (normalized) {
-        const activeListObj = currentLists.find((l) => l.id === currentActiveId);
-        if (activeListObj) {
-          const existingIdx = activeListObj.references.findIndex((r) => r.id === normalized);
-          if (existingIdx !== -1) {
-            // Already in list — just refresh addedAt for the "recent" tag
-            const newRefs = activeListObj.references.map((r, i) =>
-              i === existingIdx ? { ...r, addedAt: Date.now() } : r,
-            );
-            currentLists = updateListReferences(currentLists, currentActiveId, newRefs);
-            await persistLists(currentLists);
-          } else {
-            // New URL — resolve in background; on completion, either add silently or push the gap-fill form
-            try {
-              const result = await resolveUrl(normalized);
-              if (result.isComplete) {
-                const newRef: StoredReference = {
-                  id: normalized,
-                  metadata: result.metadata,
-                  addedAt: Date.now(),
-                };
-                currentLists = updateListReferences(currentLists, currentActiveId, [
-                  ...activeListObj.references,
-                  newRef,
-                ]);
+      if (getInitialInput) {
+        const raw = await getInitialInput();
+        if (raw) {
+          const activeListObj = currentLists.find((l) => l.id === currentActiveId);
+          if (activeListObj) {
+            // Try DOI first, then URL
+            const doiCandidate = cleanDOI(raw.trim());
+            if (validateDOI(doiCandidate)) {
+              const existingIdx = activeListObj.references.findIndex((r) => r.id === doiCandidate);
+              if (existingIdx !== -1) {
+                const newRefs = activeListObj.references.map((r, i) =>
+                  i === existingIdx ? { ...r, addedAt: Date.now() } : r,
+                );
+                currentLists = updateListReferences(currentLists, currentActiveId, newRefs);
                 await persistLists(currentLists);
-                await showToast({ style: Toast.Style.Success, title: "Citation added" });
               } else {
-                // Open gap-fill form on the resolved-but-incomplete metadata
-                if (!cancelled) {
-                  setLists(currentLists);
-                  setActiveId(currentActiveId);
-                  setIsLoading(false);
+                try {
+                  const metadata = await fetchCrossref(doiCandidate);
+                  const newRef: StoredReference = { id: doiCandidate, metadata, addedAt: Date.now() };
+                  currentLists = updateListReferences(currentLists, currentActiveId, [
+                    ...activeListObj.references,
+                    newRef,
+                  ]);
+                  await persistLists(currentLists);
+                } catch {
+                  // DOI fetch failed — clipboard may be a malformed DOI or network unavailable
                 }
-                pushGapFillForm(result, currentLists, currentActiveId, setLists, push);
-                return;
               }
-            } catch {
-              // Resolution blew up entirely — let the user enter manually
-              await showToast({ style: Toast.Style.Failure, title: "Could not resolve URL" });
+            } else {
+              const normalized = normalizeUrl(raw);
+              if (normalized) {
+                const existingIdx = activeListObj.references.findIndex((r) => r.id === normalized);
+                if (existingIdx !== -1) {
+                  const newRefs = activeListObj.references.map((r, i) =>
+                    i === existingIdx ? { ...r, addedAt: Date.now() } : r,
+                  );
+                  currentLists = updateListReferences(currentLists, currentActiveId, newRefs);
+                  await persistLists(currentLists);
+                } else {
+                  try {
+                    const result = await resolveUrl(normalized);
+                    if (result.isComplete) {
+                      const newRef: StoredReference = {
+                        id: normalized,
+                        metadata: result.metadata,
+                        addedAt: Date.now(),
+                      };
+                      currentLists = updateListReferences(currentLists, currentActiveId, [
+                        ...activeListObj.references,
+                        newRef,
+                      ]);
+                      await persistLists(currentLists);
+                      await showToast({ style: Toast.Style.Success, title: "Citation added" });
+                    } else {
+                      // Open gap-fill form on the resolved-but-incomplete metadata
+                      if (!cancelled) {
+                        setLists(currentLists);
+                        setActiveId(currentActiveId);
+                        setIsLoading(false);
+                      }
+                      pushGapFillForm(result, currentLists, currentActiveId, setLists, push);
+                      return;
+                    }
+                  } catch {
+                    await showToast({ style: Toast.Style.Failure, title: "Could not resolve URL" });
+                  }
+                }
+              }
             }
           }
         }
@@ -126,10 +153,33 @@ export default function Command() {
     setLists(newLists);
   }
 
-  async function addUrl(rawUrl: string) {
-    const normalized = normalizeUrl(rawUrl);
+  /** Add a DOI or URL, resolving it to a citation. */
+  async function addInput(raw: string) {
+    const doiCandidate = cleanDOI(raw.trim());
+    if (validateDOI(doiCandidate)) {
+      if (references.some((r) => r.id === doiCandidate)) {
+        const newRefs = references.map((r) => (r.id === doiCandidate ? { ...r, addedAt: Date.now() } : r));
+        await setActiveReferences(newRefs);
+        await showToast({ style: Toast.Style.Success, title: "Already in list" });
+        return;
+      }
+      const toast = await showToast({ style: Toast.Style.Animated, title: "Fetching citation…" });
+      try {
+        const metadata = await fetchCrossref(doiCandidate);
+        const newRef: StoredReference = { id: doiCandidate, metadata, addedAt: Date.now() };
+        await setActiveReferences([...references, newRef]);
+        toast.style = Toast.Style.Success;
+        toast.title = "Citation added";
+      } catch {
+        toast.style = Toast.Style.Failure;
+        toast.title = "Failed to fetch citation";
+      }
+      return;
+    }
+
+    const normalized = normalizeUrl(raw);
     if (!normalized) {
-      await showToast({ style: Toast.Style.Failure, title: "Invalid URL" });
+      await showToast({ style: Toast.Style.Failure, title: "Invalid DOI or URL" });
       return;
     }
     if (references.some((r) => r.id === normalized)) {
@@ -138,7 +188,6 @@ export default function Command() {
       await showToast({ style: Toast.Style.Success, title: "Already in list" });
       return;
     }
-
     const toast = await showToast({ style: Toast.Style.Animated, title: "Resolving URL…" });
     try {
       const result = await resolveUrl(normalized);
@@ -180,12 +229,18 @@ export default function Command() {
     return ca.localeCompare(cb, undefined, { sensitivity: "base" });
   });
 
+  // Detect whether search text is a new DOI or URL not yet in the list
   const trimmed = searchText.trim();
-  const trimmedNormalized = normalizeUrl(trimmed);
-  const isSearchNewUrl = trimmedNormalized !== null && !references.some((r) => r.id === trimmedNormalized);
+  const cleanedSearchDOI = cleanDOI(trimmed);
+  const isSearchDOI =
+    trimmed.length > 0 && validateDOI(cleanedSearchDOI) && !references.some((r) => r.id === cleanedSearchDOI);
+  const searchUrlNormalized = normalizeUrl(trimmed);
+  const isSearchUrl = searchUrlNormalized !== null && !references.some((r) => r.id === searchUrlNormalized);
+  const isSearchNewInput = isSearchDOI || isSearchUrl;
+  const searchInputId = isSearchDOI ? cleanedSearchDOI : (searchUrlNormalized ?? "");
 
   const filteredRefs =
-    trimmed && !trimmedNormalized
+    trimmed && !isSearchDOI && !searchUrlNormalized
       ? sortedAlpha.filter((r) => {
           const citation = buildCitation(r.metadata, format);
           return (
@@ -225,8 +280,8 @@ export default function Command() {
     <List
       isLoading={isLoading}
       filtering={false}
-      navigationTitle={activeList ? `Cite URL · ${activeList.name}` : "Cite URL"}
-      searchBarPlaceholder="Paste a URL to add it manually…"
+      navigationTitle={activeList ? `Cite · ${activeList.name}` : "Cite"}
+      searchBarPlaceholder="Paste a DOI or URL…"
       onSearchTextChange={setSearchText}
       isShowingDetail
       searchBarAccessory={
@@ -238,25 +293,31 @@ export default function Command() {
       }
       actions={<ActionPanel>{listManagementActions}</ActionPanel>}
     >
-      {isSearchNewUrl && trimmedNormalized && (
+      {/* Inline add option when search text is a new valid DOI or URL */}
+      {isSearchNewInput && searchInputId && (
         <List.Item
-          key="__add-url"
-          title={`Add: ${trimmedNormalized}`}
+          key="__add-input"
+          title={`Add: ${searchInputId}`}
           icon={Icon.Plus}
           detail={
             <List.Item.Detail
-              markdown={`### Add Reference\n\nResolve ${FORMAT_LABELS[format]} citation for:\n\n\`${trimmedNormalized}\`\n\nWill be added to **${activeList?.name ?? "current list"}**.`}
+              markdown={`### Add Reference\n\nResolve ${FORMAT_LABELS[format]} citation for:\n\n\`${searchInputId}\`\n\nWill be added to **${activeList?.name ?? "current list"}**.`}
             />
           }
           actions={
             <ActionPanel>
-              <Action title="Resolve & Add Citation" icon={Icon.Plus} onAction={() => addUrl(trimmed)} />
+              <Action
+                title={isSearchDOI ? "Fetch & Add Citation" : "Resolve & Add Citation"}
+                icon={Icon.Plus}
+                onAction={() => addInput(trimmed)}
+              />
               {listManagementActions}
             </ActionPanel>
           }
         />
       )}
 
+      {/* Persistent reference list */}
       {(() => {
         const maxAddedAt = references.length > 0 ? Math.max(...references.map((r) => r.addedAt)) : 0;
         return filteredRefs.map((ref) => {
@@ -344,7 +405,6 @@ function pushGapFillForm(
   setLists: (l: CitationList[]) => void,
   push: (node: React.ReactElement) => void,
 ) {
-  // Only webpage metadata ends up here; article metadata is always complete
   if (result.metadata.kind !== "webpage") return;
   push(
     <GapFillForm
@@ -378,7 +438,6 @@ function GapFillForm({
   const { pop } = useNavigation();
   const prefs = getPreferenceValues<Preferences>();
 
-  // Trigger the browser-focus side effect once on mount, iff the preference is on
   useEffect(() => {
     if (!prefs.focusBrowserOnMissingFields) return;
     focusOrOpenBrowserTab(initial.url).catch(() => {
@@ -396,7 +455,7 @@ function GapFillForm({
       siteName: values.siteName.trim(),
       publisher: values.publisher.trim(),
       url: values.url.trim() || initial.url,
-      accessedDate: values.accessedDate || todayISO(),
+      accessedDate: values.accessedDate,
       doi: initial.doi,
     };
     await onSubmit(finalMeta);
@@ -454,7 +513,6 @@ function EditReferenceForm({
 }) {
   const { pop } = useNavigation();
   if (reference.metadata.kind !== "webpage") {
-    // Editing DOI-backed articles is out of scope; route the user to CrossRef data instead
     return (
       <Form
         actions={
@@ -529,7 +587,6 @@ function parseAuthorsInput(raw: string): Author[] {
         const [family, given] = line.split(",", 2).map((s) => s.trim());
         return given ? { family, given } : { family };
       }
-      // No comma → treat as a corporate / single-name author
       const parts = line.split(/\s+/);
       if (parts.length === 1) return { name: line };
       return { family: parts[parts.length - 1], given: parts.slice(0, -1).join(" ") };
@@ -548,14 +605,10 @@ function formatAuthorsInput(authors: Author[]): string {
 }
 
 /**
- * Focus the browser tab that already has this URL open; if none, open a new tab in the
- * default browser. Best-effort — callers should catch and ignore exceptions.
- *
- * If this behavior turns out to be disruptive, disable it via the
- * `focusBrowserOnMissingFields` extension preference (defaults to on).
+ * Focus the browser tab that already has this URL open; if none, open a new tab.
+ * Best-effort — callers should catch and ignore exceptions.
  */
 async function focusOrOpenBrowserTab(url: string): Promise<void> {
-  // Try to activate an existing tab in Safari, Chrome, or Arc; fall through to `open` on failure
   const script = `
     set targetUrl to "${url.replace(/"/g, '\\"')}"
     set found to false
@@ -639,9 +692,8 @@ async function focusOrOpenBrowserTab(url: string): Promise<void> {
     const result = await runAppleScript(script);
     if (result === "focused") return;
   } catch {
-    // AppleScript failure (permissions, app not scriptable) — fall through to default open
+    // AppleScript failure — fall through to default open
   }
-  // No existing tab found — open in default browser
   await open(url);
 }
 
@@ -664,4 +716,9 @@ function getCitationLabel(ref: StoredReference): string {
     return `${firstName} & ${secondName} (${year})`;
   }
   return `${firstName} et al. (${year})`;
+}
+
+/** Default export: the "Cite" command — opens with an empty text box, no auto-input. */
+export default function Command() {
+  return <CiteCommand />;
 }
