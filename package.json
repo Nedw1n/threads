@@ -22,6 +22,23 @@
       "mode": "view"
     },
     {
+      "name": "cite-url",
+      "title": "Cite URL",
+      "description": "Auto-detects a URL from clipboard and resolves it to a citation via CrossRef, arXiv, PubMed, YouTube, or meta-tag scraping",
+      "mode": "view",
+      "preferences": [
+        {
+          "name": "focusBrowserOnMissingFields",
+          "type": "checkbox",
+          "title": "Browser Focus",
+          "label": "Focus article tab when fields are missing",
+          "description": "When a URL can't be fully resolved, the gap-fill form opens and the browser tab for the article is activated (or a new tab opened) so you can copy fields across. Turn off if this disrupts your flow.",
+          "default": true,
+          "required": false
+        }
+      ]
+    },
+    {
       "name": "cite-lists",
       "title": "Citation Lists",
       "description": "Manage citation lists — switch the active list, rename, duplicate, delete, and copy all citations from any list",

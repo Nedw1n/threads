@@ -2,13 +2,7 @@
  * DOI cleaning, validation, and batch parsing.
  */
 
-const DOI_PREFIXES = [
-  "https://doi.org/",
-  "http://doi.org/",
-  "https://dx.doi.org/",
-  "http://dx.doi.org/",
-  "doi:",
-];
+const DOI_PREFIXES = ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi:"];
 
 export function cleanDOI(raw: string): string {
   let doi = raw.trim();

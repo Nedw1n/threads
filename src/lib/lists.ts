@@ -1,5 +1,5 @@
 import { LocalStorage } from "@raycast/api";
-import { ArticleMetadata } from "./types";
+import { ArticleMetadata, ReferenceMetadata } from "./types";
 
 export const LISTS_STORAGE_KEY = "cite-doi-lists";
 export const ACTIVE_LIST_STORAGE_KEY = "cite-doi-active-list";
@@ -7,8 +7,12 @@ export const ACTIVE_LIST_STORAGE_KEY = "cite-doi-active-list";
 const LEGACY_REFERENCES_KEY = "cite-doi-references";
 
 export interface StoredReference {
-  doi: string;
-  metadata: ArticleMetadata;
+  /**
+   * Stable primary key. For article refs it is the DOI; for webpage refs it is the normalized URL.
+   * Kept distinct from `metadata` so we can look up by key without peeking into the union.
+   */
+  id: string;
+  metadata: ReferenceMetadata;
   addedAt: number;
 }
 
@@ -29,6 +33,36 @@ function generateId(): string {
 }
 
 /**
+ * Normalizes a raw stored reference that may predate the `id` / `metadata.kind` additions.
+ * - If `id` is missing, falls back to the legacy `doi` property.
+ * - If `metadata.kind` is missing, stamps it as "article" (the only kind the old schema knew).
+ * Returns null when the record is unreadable enough that we should drop it.
+ */
+function migrateStoredReference(raw: unknown): StoredReference | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as {
+    id?: string;
+    doi?: string;
+    metadata?: Record<string, unknown>;
+    addedAt?: number;
+  };
+  if (!r.metadata) return null;
+
+  // Tag metadata.kind if missing — old records are all article citations
+  const rawKind = r.metadata.kind;
+  const metadata: ReferenceMetadata =
+    rawKind === "webpage" || rawKind === "article"
+      ? (r.metadata as unknown as ReferenceMetadata)
+      : ({ ...r.metadata, kind: "article" } as unknown as ArticleMetadata);
+
+  // Derive id from legacy doi field, or from metadata when neither was persisted
+  const id = r.id ?? r.doi ?? (metadata.kind === "article" ? metadata.doi : metadata.url) ?? "";
+  if (!id) return null;
+
+  return { id, metadata, addedAt: r.addedAt ?? Date.now() };
+}
+
+/**
  * Loads all citation lists plus the active list ID. Performs a one-time migration from the
  * legacy flat-array storage into a "Default" list, and guarantees that at least one list
  * exists and that the active ID points at a real list.
@@ -44,7 +78,9 @@ export async function loadListsState(): Promise<ListsState> {
         id: l.id,
         name: l.name,
         createdAt: l.createdAt ?? Date.now(),
-        references: (l.references ?? []).filter((r) => r && r.metadata != null),
+        references: (l.references ?? [])
+          .map((r) => migrateStoredReference(r))
+          .filter((r): r is StoredReference => r !== null),
       }));
     } catch {
       lists = [];
@@ -56,10 +92,8 @@ export async function loadListsState(): Promise<ListsState> {
     const legacy = await LocalStorage.getItem<string>(LEGACY_REFERENCES_KEY);
     if (legacy) {
       try {
-        const parsed = JSON.parse(legacy) as Array<StoredReference & { citation?: string; markdown?: string }>;
-        const refs = parsed
-          .filter((r) => r && r.metadata != null)
-          .map(({ doi, metadata, addedAt }) => ({ doi, metadata, addedAt }));
+        const parsed = JSON.parse(legacy) as unknown[];
+        const refs = parsed.map((r) => migrateStoredReference(r)).filter((r): r is StoredReference => r !== null);
         lists = [
           {
             id: generateId(),

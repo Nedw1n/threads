@@ -6,6 +6,7 @@ import { ArticleMetadata, CitationResult } from "./lib/types";
 import { buildCitation, buildCitationMarkdown, CitationFormat, FORMAT_LABELS } from "./lib/formats";
 
 const EMPTY_METADATA: ArticleMetadata = {
+  kind: "article",
   authors: [],
   year: "",
   title: "",
@@ -127,11 +128,7 @@ function CitationResults({ dois }: { dois: string[] }) {
       isLoading={isLoading}
       isShowingDetail
       searchBarAccessory={
-        <List.Dropdown
-          tooltip="Citation Format"
-          value={format}
-          onChange={(val) => setFormat(val as CitationFormat)}
-        >
+        <List.Dropdown tooltip="Citation Format" value={format} onChange={(val) => setFormat(val as CitationFormat)}>
           {(Object.keys(FORMAT_LABELS) as CitationFormat[]).map((f) => (
             <List.Dropdown.Item key={f} title={FORMAT_LABELS[f]} value={f} />
           ))}
