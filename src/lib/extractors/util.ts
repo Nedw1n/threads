@@ -78,7 +78,7 @@ export function emptyWebpageMetadata(url: string): WebpageMetadata {
     siteName: "",
     publisher: "",
     url,
-    accessedDate: todayISO(),
+    accessedDate: "",
     doi: "",
   };
 }

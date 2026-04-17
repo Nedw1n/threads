@@ -16,15 +16,26 @@
   "license": "MIT",
   "commands": [
     {
-      "name": "cite-doi",
-      "title": "Cite DOI",
-      "description": "Auto-detects a DOI from clipboard, adds it to the active citation list, and lets you copy citations",
-      "mode": "view"
+      "name": "cite",
+      "title": "Cite",
+      "description": "Paste a DOI or URL to look up a citation and add it to the active list",
+      "mode": "view",
+      "preferences": [
+        {
+          "name": "focusBrowserOnMissingFields",
+          "type": "checkbox",
+          "title": "Browser Focus",
+          "label": "Focus article tab when fields are missing",
+          "description": "When a URL can't be fully resolved, the gap-fill form opens and the browser tab for the article is activated (or a new tab opened) so you can copy fields across. Turn off if this disrupts your flow.",
+          "default": true,
+          "required": false
+        }
+      ]
     },
     {
-      "name": "cite-url",
-      "title": "Cite URL",
-      "description": "Auto-detects a URL from clipboard and resolves it to a citation via CrossRef, arXiv, PubMed, YouTube, or meta-tag scraping",
+      "name": "cite-from-clipboard",
+      "title": "Cite From Clipboard",
+      "description": "Reads a DOI or URL from the clipboard and immediately resolves it to a citation",
       "mode": "view",
       "preferences": [
         {
