@@ -334,7 +334,9 @@ export function CiteCommand({ getInitialInput }: CiteCommandProps) {
                 tintColor: Color.SecondaryText,
               }}
               accessories={isRecent ? [{ tag: { value: "recent", color: Color.Blue } }] : []}
-              detail={<List.Item.Detail markdown={`### Citation\n\n${citationMd}`} />}
+              detail={
+                <List.Item.Detail markdown={buildDetailMarkdown(ref, citationMd)} />
+              }
               actions={
                 <ActionPanel>
                   <Action.CopyToClipboard title="Copy Citation" content={citation} />
@@ -695,6 +697,12 @@ async function focusOrOpenBrowserTab(url: string): Promise<void> {
     // AppleScript failure — fall through to default open
   }
   await open(url);
+}
+
+function buildDetailMarkdown(ref: StoredReference, citationMd: string): string {
+  const title = ref.metadata.title?.trim() || "Untitled";
+  const subtitle = getCitationLabel(ref);
+  return `### ${title}\n\n_${subtitle}_\n\n---\n\n**Citation**\n\n${citationMd}`;
 }
 
 function getCitationLabel(ref: StoredReference): string {
